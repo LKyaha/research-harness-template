@@ -8,6 +8,7 @@ Key guarantees:
 - one task ID is claimed on the base branch before local execution;
 - a claimed task is never automatically executed again;
 - task.json + HARNESS_INBOX content are bound to the dispatch commit;
+- task-controlled file paths stay inside the repository;
 - PULL_REQUEST delivery runs on `harness/<task_id>` instead of the base branch;
 - protected trigger/consumption files cannot survive Harness mutation in the final diff;
 - retries require a new task ID.
@@ -24,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+ROOT_RESOLVED = ROOT.resolve()
 TASK_PATH = ROOT / ".harness" / "task.json"
 COMPLETED_PATH = ROOT / ".harness" / "completed.json"
 LAST_RUN_PATH = ROOT / ".harness" / "last_worker_run.json"
@@ -56,6 +58,35 @@ def git(*args: str, check: bool = True, capture: bool = False) -> subprocess.Com
     )
 
 
+def resolve_repo_path(value: str) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("repository path must be a non-empty string")
+    rel = Path(value)
+    if rel.is_absolute():
+        raise ValueError(f"repository path must be relative: {value!r}")
+    resolved = (ROOT / rel).resolve()
+    try:
+        resolved.relative_to(ROOT_RESOLVED)
+    except ValueError as exc:
+        raise ValueError(f"repository path escapes project root: {value!r}") from exc
+    return resolved
+
+
+def validate_branch_name(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("base_branch must be a non-empty string")
+    name = value.strip()
+    # Deliberately narrower than all Git-valid refs: predictable ASCII branch names are safer
+    # in an automation template and avoid option/ref ambiguity across platforms.
+    if len(name) > 200 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", name):
+        raise ValueError(f"unsafe/unsupported base_branch: {value!r}")
+    if ".." in name or "@{" in name or "//" in name:
+        raise ValueError(f"unsafe/unsupported base_branch: {value!r}")
+    if name.endswith(("/", ".", ".lock")) or any(part in {"", ".", ".."} for part in name.split("/")):
+        raise ValueError(f"unsafe/unsupported base_branch: {value!r}")
+    return name
+
+
 def validate_task(task: dict) -> None:
     required = [
         "schema_version",
@@ -78,13 +109,13 @@ def validate_task(task: dict) -> None:
         raise ValueError(f"unknown autonomy decision: {task['autonomy']}")
     if task["delivery_mode"] not in ALLOWED_DELIVERY:
         raise ValueError(f"unknown delivery_mode: {task['delivery_mode']}")
+    inbox = resolve_repo_path(task["inbox_path"])
+    if not inbox.is_file():
+        raise ValueError(f"inbox_path does not exist or is not a file: {task['inbox_path']}")
     if task["delivery_mode"] == "PULL_REQUEST":
-        base = task.get("base_branch")
-        if not isinstance(base, str) or not base.strip():
-            raise ValueError("PULL_REQUEST delivery requires base_branch")
-    inbox = ROOT / task["inbox_path"]
-    if not inbox.exists():
-        raise ValueError(f"inbox_path does not exist: {task['inbox_path']}")
+        validate_branch_name(task.get("base_branch"))
+    elif task.get("base_branch") is not None:
+        validate_branch_name(task["base_branch"])
 
 
 def completed_ids(data: dict) -> set[str]:
@@ -114,7 +145,12 @@ def remote_completed(base_branch: str) -> dict:
 def prepare_and_claim(task: dict, dispatch_inbox_text: str) -> tuple[dict, str, str]:
     """Fast-forward to base, verify intent is unchanged, claim task, choose work branch."""
     task_id = task["task_id"]
-    base_branch = str(task.get("base_branch") or os.environ.get("GITHUB_REF_NAME") or "main")
+    base_branch = validate_branch_name(str(task.get("base_branch") or os.environ.get("GITHUB_REF_NAME") or "main"))
+    work_branch = (
+        f"harness/{safe_branch_component(task_id)}"
+        if task["delivery_mode"] == "PULL_REQUEST"
+        else base_branch
+    )
 
     git("config", "user.name", "research-harness[bot]")
     git("config", "user.email", "research-harness[bot]@users.noreply.github.com")
@@ -124,12 +160,21 @@ def prepare_and_claim(task: dict, dispatch_inbox_text: str) -> tuple[dict, str, 
     if task_id in completed_ids(completed):
         return completed, base_branch, ""
 
+    if task["delivery_mode"] == "PULL_REQUEST":
+        exists = git("ls-remote", "--exit-code", "--heads", "origin", work_branch, check=False, capture=True)
+        if exists.returncode == 0:
+            raise RuntimeError(
+                f"work branch already exists for unconsumed task: {work_branch}; "
+                "resolve the collision or publish a new task ID before claiming execution"
+            )
+
     # Move to latest base. A workflow re-run may have an old GITHUB_SHA, but it must
     # never replay stale intent against newer repository state.
     git("switch", "-C", base_branch, f"origin/{base_branch}")
 
     latest_task = load_json(TASK_PATH)
-    latest_inbox_text = (ROOT / latest_task.get("inbox_path", "HARNESS_INBOX.md")).read_text(encoding="utf-8")
+    latest_inbox_path = resolve_repo_path(latest_task.get("inbox_path", "HARNESS_INBOX.md"))
+    latest_inbox_text = latest_inbox_path.read_text(encoding="utf-8")
     if latest_task != task or latest_inbox_text != dispatch_inbox_text:
         raise RuntimeError(
             "stale dispatch: task.json or inbox content changed after the triggering commit; "
@@ -146,13 +191,7 @@ def prepare_and_claim(task: dict, dispatch_inbox_text: str) -> tuple[dict, str, 
     git("push", "origin", f"HEAD:{base_branch}")
 
     if task["delivery_mode"] == "PULL_REQUEST":
-        work_branch = f"harness/{safe_branch_component(task_id)}"
-        exists = git("ls-remote", "--exit-code", "--heads", "origin", work_branch, check=False, capture=True)
-        if exists.returncode == 0:
-            raise RuntimeError(f"work branch already exists for claimed task: {work_branch}")
         git("switch", "-c", work_branch)
-    else:
-        work_branch = base_branch
 
     return completed, base_branch, work_branch
 
@@ -199,7 +238,8 @@ def main() -> int:
     if timeout_s <= 0:
         raise ValueError("HARNESS_TIMEOUT_SECONDS must be > 0")
 
-    dispatch_inbox_text = (ROOT / dispatch_task["inbox_path"]).read_text(encoding="utf-8")
+    dispatch_inbox_path = resolve_repo_path(dispatch_task["inbox_path"])
+    dispatch_inbox_text = dispatch_inbox_path.read_text(encoding="utf-8")
     task_id = dispatch_task["task_id"]
     completed, base_branch, work_branch = prepare_and_claim(dispatch_task, dispatch_inbox_text)
     if not work_branch:
