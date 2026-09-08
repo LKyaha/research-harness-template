@@ -1,0 +1,26 @@
+name: Research State Check
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate research-state contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate repository state
+        run: python harness/validate_repository.py
