@@ -8,7 +8,7 @@ Key guarantees:
 - one task ID is claimed on the base branch before local execution;
 - a claimed task is never automatically executed again;
 - PULL_REQUEST delivery runs on `harness/<task_id>` instead of the base branch;
-- the Harness cannot mutate its own trigger or consumption ledger;
+- the Harness cannot mutate its own trigger or consumption ledger in the final diff;
 - retries require a new task ID.
 """
 
@@ -117,17 +117,17 @@ def prepare_and_claim(task: dict) -> tuple[dict, str, str]:
 
     git("config", "user.name", "research-harness[bot]")
     git("config", "user.email", "research-harness[bot]@users.noreply.github.com")
-    git("fetch", "origin", base_branch)
+    # Explicit refspec guarantees origin/<base> is refreshed, even when this is a re-run
+    # of a workflow whose GITHUB_SHA points to an older dispatch commit.
+    git("fetch", "origin", f"+refs/heads/{base_branch}:refs/remotes/origin/{base_branch}")
 
     completed = remote_completed(base_branch)
     if task_id in completed_ids(completed):
         return completed, base_branch, ""
 
-    # Work from the latest base so a workflow re-run cannot replay a task from an old dispatch SHA.
+    # Work from the latest base so an old workflow run cannot replay stale intent.
     git("switch", "-C", base_branch, f"origin/{base_branch}")
 
-    # Re-read the trigger after moving to latest base. If the planner has already published
-    # another task, do not execute stale workflow intent.
     latest_task = load_json(TASK_PATH)
     if latest_task.get("task_id") != task_id or latest_task.get("status") != "READY":
         raise RuntimeError(
@@ -146,7 +146,6 @@ def prepare_and_claim(task: dict) -> tuple[dict, str, str]:
 
     if task["delivery_mode"] == "PULL_REQUEST":
         work_branch = f"harness/{safe_branch_component(task_id)}"
-        # A task ID is one-shot; an existing remote branch is therefore evidence of a collision.
         exists = git("ls-remote", "--exit-code", "--heads", "origin", work_branch, check=False, capture=True)
         if exists.returncode == 0:
             raise RuntimeError(f"work branch already exists for claimed task: {work_branch}")
@@ -197,7 +196,6 @@ def main() -> int:
         print(f"No dispatch: task already consumed: {task_id}")
         return 0
 
-    # After claiming/switching, the task should be identical in all execution-relevant fields.
     task = load_json(TASK_PATH)
     validate_task(task)
     if task["task_id"] != task_id:
@@ -233,11 +231,13 @@ def main() -> int:
     except subprocess.TimeoutExpired as exc:
         exit_code = 124
         error = f"timeout after {timeout_s}s: {exc}"
-    except Exception as exc:  # claim remains consumed; repair requires a new task ID
+    except Exception as exc:
         exit_code = 125
         error = f"worker exception: {type(exc).__name__}: {exc}"
     finally:
         # A Harness is not allowed to self-publish the next task or rewrite the one-shot ledger.
+        # record_state.py stages these restored files so final branch diff is also repaired if
+        # the Harness had committed a protected-file mutation.
         if TASK_PATH.read_text(encoding="utf-8") != original_task_text:
             TASK_PATH.write_text(original_task_text, encoding="utf-8", newline="\n")
             suffix = "task.json mutation by Harness was reverted"
