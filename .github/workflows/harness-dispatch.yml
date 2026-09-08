@@ -28,39 +28,25 @@ jobs:
           fetch-depth: 0
           clean: true
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Show published task
-        shell: bash
-        run: |
-          echo "Repository: $GITHUB_REPOSITORY"
-          echo "Commit: $GITHUB_SHA"
-          cat .harness/task.json
+        run: python -c "from pathlib import Path; print(Path('.harness/task.json').read_text(encoding='utf-8'))"
 
       - name: Execute local Harness once
         id: harness
-        shell: bash
         env:
           HARNESS_COMMAND_JSON: ${{ vars.HARNESS_COMMAND_JSON }}
           HARNESS_TIMEOUT_SECONDS: ${{ vars.HARNESS_TIMEOUT_SECONDS || '3600' }}
-        run: python3 harness/worker.py
+        run: python harness/worker.py
 
-      # The Harness should commit project code/reports itself before it exits.
-      # This step only commits the communication/worker state. It deliberately
-      # does NOT `git add -A`, to reduce the risk of accidentally publishing
-      # local files, model data, credentials, or large artifacts.
-      - name: Record communication state
+      # The Harness should commit intentional project code/reports before it exits.
+      # This helper only stages communication/worker state and deliberately avoids
+      # `git add -A`, reducing the chance of publishing local model data, secrets,
+      # caches, or unrelated generated files.
+      - name: Record and push communication state
         if: always()
-        shell: bash
-        run: |
-          git config user.name "research-harness[bot]"
-          git config user.email "research-harness[bot]@users.noreply.github.com"
-
-          git add HARNESS_OUTBOX.md .harness/completed.json .harness/last_worker_run.json 2>/dev/null || true
-
-          if ! git diff --cached --quiet; then
-            TASK_ID="$(python3 -c 'import json; print(json.load(open(".harness/task.json"))["task_id"])')"
-            git commit -m "harness: record ${TASK_ID} result"
-          fi
-
-          # Push any commits made by the Harness plus the communication-state commit.
-          # Uncommitted arbitrary local files are intentionally not added here.
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+        run: python harness/record_state.py
