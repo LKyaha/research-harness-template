@@ -7,8 +7,9 @@ It never invents the next research task.
 Key guarantees:
 - one task ID is claimed on the base branch before local execution;
 - a claimed task is never automatically executed again;
+- task.json + HARNESS_INBOX content are bound to the dispatch commit;
 - PULL_REQUEST delivery runs on `harness/<task_id>` instead of the base branch;
-- the Harness cannot mutate its own trigger or consumption ledger in the final diff;
+- protected trigger/consumption files cannot survive Harness mutation in the final diff;
 - retries require a new task ID.
 """
 
@@ -110,29 +111,29 @@ def remote_completed(base_branch: str) -> dict:
     return data
 
 
-def prepare_and_claim(task: dict) -> tuple[dict, str, str]:
-    """Fast-forward to base, atomically claim task on base, then choose work branch."""
+def prepare_and_claim(task: dict, dispatch_inbox_text: str) -> tuple[dict, str, str]:
+    """Fast-forward to base, verify intent is unchanged, claim task, choose work branch."""
     task_id = task["task_id"]
     base_branch = str(task.get("base_branch") or os.environ.get("GITHUB_REF_NAME") or "main")
 
     git("config", "user.name", "research-harness[bot]")
     git("config", "user.email", "research-harness[bot]@users.noreply.github.com")
-    # Explicit refspec guarantees origin/<base> is refreshed, even when this is a re-run
-    # of a workflow whose GITHUB_SHA points to an older dispatch commit.
     git("fetch", "origin", f"+refs/heads/{base_branch}:refs/remotes/origin/{base_branch}")
 
     completed = remote_completed(base_branch)
     if task_id in completed_ids(completed):
         return completed, base_branch, ""
 
-    # Work from the latest base so an old workflow run cannot replay stale intent.
+    # Move to latest base. A workflow re-run may have an old GITHUB_SHA, but it must
+    # never replay stale intent against newer repository state.
     git("switch", "-C", base_branch, f"origin/{base_branch}")
 
     latest_task = load_json(TASK_PATH)
-    if latest_task.get("task_id") != task_id or latest_task.get("status") != "READY":
+    latest_inbox_text = (ROOT / latest_task.get("inbox_path", "HARNESS_INBOX.md")).read_text(encoding="utf-8")
+    if latest_task != task or latest_inbox_text != dispatch_inbox_text:
         raise RuntimeError(
-            f"stale dispatch: workflow task={task_id}, latest base task={latest_task.get('task_id')} "
-            f"status={latest_task.get('status')}"
+            "stale dispatch: task.json or inbox content changed after the triggering commit; "
+            "publish a new task ID intentionally instead of reusing old workflow intent"
         )
 
     ids = list(completed.get("completed_task_ids", []))
@@ -190,24 +191,25 @@ def main() -> int:
         print("No dispatch: HUMAN_REVIEW_REQUIRED")
         return 0
 
+    # Infrastructure/config preflight happens before the one-shot claim. A missing local
+    # command or invalid timeout is not a scientific execution attempt and should be fixable
+    # without burning the task ID.
+    argv = render_argv(dispatch_task)
+    timeout_s = int(os.environ.get("HARNESS_TIMEOUT_SECONDS", "3600"))
+    if timeout_s <= 0:
+        raise ValueError("HARNESS_TIMEOUT_SECONDS must be > 0")
+
+    dispatch_inbox_text = (ROOT / dispatch_task["inbox_path"]).read_text(encoding="utf-8")
     task_id = dispatch_task["task_id"]
-    completed, base_branch, work_branch = prepare_and_claim(dispatch_task)
+    completed, base_branch, work_branch = prepare_and_claim(dispatch_task, dispatch_inbox_text)
     if not work_branch:
         print(f"No dispatch: task already consumed: {task_id}")
         return 0
 
     task = load_json(TASK_PATH)
     validate_task(task)
-    if task["task_id"] != task_id:
-        raise RuntimeError("task changed after claim")
-
     original_task_text = TASK_PATH.read_text(encoding="utf-8")
     protected_completed_text = COMPLETED_PATH.read_text(encoding="utf-8")
-
-    argv = render_argv(task)
-    timeout_s = int(os.environ.get("HARNESS_TIMEOUT_SECONDS", "3600"))
-    if timeout_s <= 0:
-        raise ValueError("HARNESS_TIMEOUT_SECONDS must be > 0")
 
     env = os.environ.copy()
     env.update(
@@ -260,7 +262,7 @@ def main() -> int:
                 "finished_at": datetime.now(timezone.utc).isoformat(),
                 "worker_exit_code": exit_code,
                 "worker_error": error,
-                "note": "Task was claimed before execution. Any retry requires a new task_id.",
+                "note": "Task was claimed before execution. Any execution retry requires a new task_id.",
             },
         )
 
