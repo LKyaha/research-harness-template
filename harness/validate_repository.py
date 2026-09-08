@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+ROOT_RESOLVED = ROOT.resolve()
 
 REQUIRED_FILES = [
     "README.md",
@@ -58,6 +59,43 @@ def load_json(path: str, v: Validation) -> dict:
     return data
 
 
+def resolve_repo_path(value: object) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("must be a non-empty relative path")
+    rel = Path(value)
+    if rel.is_absolute():
+        raise ValueError("must be relative, not absolute")
+    resolved = (ROOT / rel).resolve()
+    try:
+        resolved.relative_to(ROOT_RESOLVED)
+    except ValueError as exc:
+        raise ValueError("must stay inside the repository root") from exc
+    return resolved
+
+
+def validate_branch_name(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("must be a non-empty string")
+    name = value.strip()
+    if len(name) > 200 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", name):
+        raise ValueError("contains unsupported characters or length")
+    if ".." in name or "@{" in name or "//" in name:
+        raise ValueError("contains an unsafe ref sequence")
+    if name.endswith(("/", ".", ".lock")) or any(part in {"", ".", ".."} for part in name.split("/")):
+        raise ValueError("is not a safe branch path")
+    return name
+
+
+def markdown_header(text: str, label: str) -> str | None:
+    match = re.search(rf"^\*\*{re.escape(label)}:\*\*\s*(.*?)\s*$", text, flags=re.MULTILINE)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    if len(value) >= 2 and value.startswith("`") and value.endswith("`"):
+        value = value[1:-1].strip()
+    return value
+
+
 def validate_required_files(v: Validation) -> None:
     for rel in REQUIRED_FILES:
         if not (ROOT / rel).exists():
@@ -94,26 +132,46 @@ def validate_task(v: Validation) -> None:
     if not isinstance(task_id, str) or not task_id.strip():
         v.error(".harness/task.json: task_id must be a non-empty string")
 
-    inbox_path = task.get("inbox_path")
-    if not isinstance(inbox_path, str) or not (ROOT / inbox_path).exists():
-        v.error(f".harness/task.json: inbox_path does not exist: {inbox_path!r}")
+    inbox_path: Path | None = None
+    try:
+        inbox_path = resolve_repo_path(task.get("inbox_path"))
+        if not inbox_path.is_file():
+            v.error(f".harness/task.json: inbox_path is not a file: {task.get('inbox_path')!r}")
+    except ValueError as exc:
+        v.error(f".harness/task.json: invalid inbox_path {task.get('inbox_path')!r}: {exc}")
 
     if task.get("delivery_mode") == "PULL_REQUEST":
-        base = task.get("base_branch")
-        if not isinstance(base, str) or not base.strip():
-            v.error(".harness/task.json: PULL_REQUEST delivery requires base_branch")
+        try:
+            validate_branch_name(task.get("base_branch"))
+        except ValueError as exc:
+            v.error(f".harness/task.json: invalid base_branch {task.get('base_branch')!r}: {exc}")
+    elif task.get("base_branch") is not None:
+        try:
+            validate_branch_name(task.get("base_branch"))
+        except ValueError as exc:
+            v.error(f".harness/task.json: invalid base_branch {task.get('base_branch')!r}: {exc}")
 
     if task.get("status") == "READY":
         if not task.get("issued_at"):
             v.error(".harness/task.json: READY task requires issued_at")
         if task.get("autonomy") == "HUMAN_REVIEW_REQUIRED":
             v.warn("READY + HUMAN_REVIEW_REQUIRED will intentionally not dispatch")
-        try:
-            inbox = (ROOT / str(inbox_path)).read_text(encoding="utf-8")
-            if str(task_id) not in inbox:
-                v.error("READY task_id is not present in HARNESS_INBOX/inbox_path")
-        except Exception:
-            pass
+
+        if inbox_path is not None and inbox_path.is_file():
+            inbox = inbox_path.read_text(encoding="utf-8")
+            expected_headers = {
+                "Task ID": task.get("task_id"),
+                "Autonomy decision": task.get("autonomy"),
+                "Delivery mode": task.get("delivery_mode"),
+            }
+            for label, expected in expected_headers.items():
+                observed = markdown_header(inbox, label)
+                if observed is None:
+                    v.error(f"READY inbox missing markdown header: {label}")
+                elif observed != str(expected):
+                    v.error(
+                        f"READY inbox header mismatch for {label}: expected {expected!r}, observed {observed!r}"
+                    )
 
 
 def validate_registry(path: str, collection: str, id_key: str, required_keys: list[str], v: Validation) -> None:
@@ -153,6 +211,7 @@ def validate_outbox_contract(v: Validation) -> None:
         "## Commands",
         "## Evidence / artifacts",
         "## Interpretation confidence",
+        "## Review recommendation",
     ]
     for section in required_sections:
         if section not in text:
