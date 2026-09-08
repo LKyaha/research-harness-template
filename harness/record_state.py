@@ -47,9 +47,6 @@ def main() -> int:
 
     branch = os.environ.get("GITHUB_REF_NAME", "").strip()
     if not branch:
-        branch = git("branch", "--show-current", check=True).stdout.strip() if False else ""
-    if not branch:
-        # workflow sets GITHUB_REF_NAME; manual invocation may pass branch explicitly instead
         raise RuntimeError("GITHUB_REF_NAME is empty; refusing to guess push target")
 
     git("push", "origin", f"HEAD:{branch}")
