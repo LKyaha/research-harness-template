@@ -7,7 +7,8 @@ It never invents the next research task.
 Key guarantees:
 - one task ID is claimed on the base branch before local execution;
 - a claimed task is never automatically executed again;
-- task.json + HARNESS_INBOX content are bound to the dispatch commit;
+- execution is bound to the Git commit that published the task;
+- task.json + HARNESS_INBOX content are also checked for stale intent;
 - task-controlled file paths stay inside the repository;
 - PULL_REQUEST delivery runs on `harness/<task_id>` instead of the base branch;
 - protected trigger/consumption files cannot survive Harness mutation in the final diff;
@@ -142,8 +143,8 @@ def remote_completed(base_branch: str) -> dict:
     return data
 
 
-def prepare_and_claim(task: dict, dispatch_inbox_text: str) -> tuple[dict, str, str]:
-    """Fast-forward to base, verify intent is unchanged, claim task, choose work branch."""
+def prepare_and_claim(task: dict, dispatch_inbox_text: str) -> tuple[dict, str, str, str]:
+    """Verify immutable dispatch snapshot, claim task, then choose work branch."""
     task_id = task["task_id"]
     base_branch = validate_branch_name(str(task.get("base_branch") or os.environ.get("GITHUB_REF_NAME") or "main"))
     work_branch = (
@@ -158,7 +159,15 @@ def prepare_and_claim(task: dict, dispatch_inbox_text: str) -> tuple[dict, str, 
 
     completed = remote_completed(base_branch)
     if task_id in completed_ids(completed):
-        return completed, base_branch, ""
+        return completed, base_branch, "", ""
+
+    remote_base_sha = git("rev-parse", f"origin/{base_branch}", capture=True).stdout.strip()
+    dispatch_sha = os.environ.get("GITHUB_SHA", "").strip()
+    if dispatch_sha and remote_base_sha != dispatch_sha:
+        raise RuntimeError(
+            f"stale dispatch: base branch moved after task publication "
+            f"(trigger={dispatch_sha}, latest={remote_base_sha}); publish a new task ID against current state"
+        )
 
     if task["delivery_mode"] == "PULL_REQUEST":
         exists = git("ls-remote", "--exit-code", "--heads", "origin", work_branch, check=False, capture=True)
@@ -168,8 +177,6 @@ def prepare_and_claim(task: dict, dispatch_inbox_text: str) -> tuple[dict, str, 
                 "resolve the collision or publish a new task ID before claiming execution"
             )
 
-    # Move to latest base. A workflow re-run may have an old GITHUB_SHA, but it must
-    # never replay stale intent against newer repository state.
     git("switch", "-C", base_branch, f"origin/{base_branch}")
 
     latest_task = load_json(TASK_PATH)
@@ -193,7 +200,7 @@ def prepare_and_claim(task: dict, dispatch_inbox_text: str) -> tuple[dict, str, 
     if task["delivery_mode"] == "PULL_REQUEST":
         git("switch", "-c", work_branch)
 
-    return completed, base_branch, work_branch
+    return completed, base_branch, work_branch, remote_base_sha
 
 
 def render_argv(task: dict) -> list[str]:
@@ -241,7 +248,7 @@ def main() -> int:
     dispatch_inbox_path = resolve_repo_path(dispatch_task["inbox_path"])
     dispatch_inbox_text = dispatch_inbox_path.read_text(encoding="utf-8")
     task_id = dispatch_task["task_id"]
-    completed, base_branch, work_branch = prepare_and_claim(dispatch_task, dispatch_inbox_text)
+    completed, base_branch, work_branch, dispatch_base_sha = prepare_and_claim(dispatch_task, dispatch_inbox_text)
     if not work_branch:
         print(f"No dispatch: task already consumed: {task_id}")
         return 0
@@ -260,6 +267,7 @@ def main() -> int:
             "HARNESS_DELIVERY_MODE": task["delivery_mode"],
             "HARNESS_BASE_BRANCH": base_branch,
             "HARNESS_WORK_BRANCH": work_branch,
+            "HARNESS_DISPATCH_BASE_SHA": dispatch_base_sha,
         }
     )
 
@@ -298,6 +306,7 @@ def main() -> int:
                 "delivery_mode": task["delivery_mode"],
                 "base_branch": base_branch,
                 "work_branch": work_branch,
+                "dispatch_base_sha": dispatch_base_sha,
                 "started_at": started,
                 "finished_at": datetime.now(timezone.utc).isoformat(),
                 "worker_exit_code": exit_code,
