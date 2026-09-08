@@ -3,7 +3,9 @@
 **Task ID:** [TASK-ID]  
 **Completed:** [YYYY-MM-DD]  
 **Stage:** [STAGE]  
-**Status:** PASS / FAIL / BLOCKED / PARTIAL
+**Status:** PASS / FAIL / BLOCKED / PARTIAL  
+**Delivery mode:** DIRECT / PULL_REQUEST  
+**Work branch:** [branch]
 
 ## Gate result
 
@@ -40,7 +42,17 @@
 
 ## Evidence / artifacts
 
-- [path / run ID / report / log]
+- Compact evidence/report paths: [paths]
+- Source provenance IDs: [SRC-...]
+- Artifact provenance IDs: [ART-...]
+- Large/external artifact location + checksum: [if applicable]
+
+## Controls / validity notes
+
+- Baseline/control: [description]
+- Positive/negative controls: [if applicable]
+- Known confounders: [items]
+- Instrumentation caveats: [items]
 
 ## Unexpected findings
 
@@ -53,11 +65,25 @@
 ## Interpretation confidence
 
 - High-confidence facts: [facts directly demonstrated]
+- Derived facts: [mechanically computed results]
 - Tentative interpretations: [clearly labeled inference]
 - Unknowns remaining: [unknowns]
 
+## Hypothesis / state impact suggestion
+
+- Hypotheses supported: [H-... / none]
+- Hypotheses contradicted: [H-... / none]
+- Decisions/exclusions that may need review: [items]
+- Canonical files that may need reconsideration: [paths / none]
+
+## Review recommendation
+
+`APPROVE` / `REQUEST_CHANGES` / `HUMAN_REVIEW_REQUIRED` / `NOT_APPLICABLE`
+
+Reason: [short evidence-based reason]
+
 ## Suggested next action
 
-[Suggestion only; canonical project direction is decided after review.]
+[Suggestion only; canonical project direction and next task are decided after review.]
 
-> Harness responsibility is evidence production and structured reporting. Do not convert tentative interpretations into canonical project facts without review.
+> Harness responsibility is evidence production and structured reporting. Do not convert tentative interpretations into canonical project facts, merge your own PR, or publish the next task without review.
