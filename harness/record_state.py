@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Commit and push only Harness communication state after execution.
+"""Commit and push only Harness communication/protected-state repairs after execution.
 
 Intentional project source/report commits should be created by the Harness itself.
 This helper deliberately avoids `git add -A` and pushes the work branch recorded by
 `worker.py`, which may be a PR branch rather than the base branch.
+
+`worker.py` restores protected dispatcher files if the Harness changed them. They are
+included here so that, even if the Harness committed a protected-file mutation, the
+final branch diff contains a committed repair before push/review.
 """
 
 from __future__ import annotations
@@ -17,6 +21,8 @@ LAST_RUN_PATH = ROOT / ".harness" / "last_worker_run.json"
 SAFE_PATHS = [
     "HARNESS_OUTBOX.md",
     ".harness/last_worker_run.json",
+    ".harness/task.json",
+    ".harness/completed.json",
 ]
 
 
@@ -60,7 +66,7 @@ def main() -> int:
     if diff.returncode == 1:
         git("commit", "-m", f"harness: record {task_id} result")
 
-    # Push commits created intentionally by the Harness plus the communication-state commit.
+    # Push commits created intentionally by the Harness plus the communication/repair commit.
     # Arbitrary uncommitted files remain untracked/unstaged by design.
     git("push", "origin", f"HEAD:{work_branch}")
     return 0
