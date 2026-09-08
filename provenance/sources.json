@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "source_id": "SRC-EXAMPLE",
+      "kind": "git_repository",
+      "name": "Replace this example with an important external source",
+      "uri": "https://example.invalid/owner/repository",
+      "revision": "IMMUTABLE_COMMIT_OR_VERSION",
+      "retrieved_at": null,
+      "license": "UNKNOWN",
+      "local_path": null,
+      "sha256": null,
+      "notes": "Delete or replace this example when bootstrapping a real project."
+    }
+  ]
+}
