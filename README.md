@@ -1,98 +1,161 @@
 # Research Harness Template
 
-A reusable project template for long-running research, coding, and experimental work coordinated between ChatGPT and a local Harness/agent.
+A reusable project template for long-running research, coding, and experimental work coordinated between a human operator, ChatGPT/project planner-reviewer, and a local Harness/agent.
 
 ## Core idea
 
-Chat history is not project state. Raw logs are not project state. The repository is the durable external working memory.
-
-Canonical state flows as:
+Chat history is not project state. Raw logs are not project state. The repository is the durable external working memory **and provenance graph**.
 
 ```text
 raw evidence / code / logs / experiments
         ↓
-structured findings
+structured evidence + provenance
         ↓
-HYPOTHESES + DECISIONS + FAILURES
+reviewable PR / report
+        ↓
+HYPOTHESES + DECISIONS + FAILURES + UNRESOLVED
         ↓
 CONTEXT_LEDGER
         ↓
 PROJECT_STATE
 ```
 
-`PROJECT_STATE.md` is the shortest authoritative snapshot. `CONTEXT_LEDGER.md` preserves the reasoning structure behind it.
+`PROJECT_STATE.md` is the shortest authoritative snapshot. `CONTEXT_LEDGER.md` preserves the decision-relevant reasoning structure behind it. Git history, PRs, experiment reports, source revisions, and artifact manifests let future agents drill back into evidence only when needed.
 
-## Optional event-driven local execution
+## Research-team model
 
-The template also includes an optional GitHub Actions + self-hosted runner transport:
+A useful mental model is:
+
+- **Human operator / PI** — priorities, resource limits, irreversible/high-impact decisions.
+- **ChatGPT / planner-reviewer** — restores canonical context, evaluates evidence, reviews PRs, updates hypotheses/decisions/state, publishes the next bounded task.
+- **Local Harness / research engineer** — inspects source, writes code, runs tests/experiments, preserves failures, and submits reproducible evidence.
+- **GitHub** — durable working memory, source control, review queue, provenance index, and event transport.
+
+## Event-driven reviewed loop
+
+The recommended path for code and research experiments is `PULL_REQUEST` delivery:
 
 ```text
 Planner / ChatGPT
       ↓
 HARNESS_INBOX.md              human-readable task
-.harness/task.json            machine READY trigger
+.harness/task.json            one-shot READY trigger
       ↓
 GitHub push event
       ↓
-self-hosted GitHub runner
+self-hosted runner
       ↓
 harness/worker.py
       ↓
-local Harness / Codex / OpenCode / custom agent
+claim task ID on base branch
       ↓
-HARNESS_OUTBOX.md + committed evidence
+create harness/<task_id>
       ↓
-GitHub
+local Harness executes once
       ↓
-Planner reviews and publishes a new task ID
+code + configs + reports + provenance + HARNESS_OUTBOX
+      ↓
+workflow pushes work branch
+      ↓
+automatic Pull Request
+      ↓
+ChatGPT / human scientific review
+      ↓
+merge accepted evidence
+      ↓
+compress durable findings into canonical state
+      ↓
+publish a new task ID
 ```
 
-The important invariant is **one task ID, at most one execution**. A Harness result or OUTBOX push cannot trigger the next round by itself.
+The key invariant is **one task ID, at most one execution attempt**. A result, PR, OUTBOX update, or normal code commit cannot launch the next task by itself.
 
-The template defaults to conservative Level-2 autonomy. See `AUTONOMY_POLICY.md` before enabling automatic local execution.
+## Review is more than code review
+
+`docs/REVIEW_PROTOCOL.md` requires reviewers to check:
+
+1. execution integrity;
+2. instrumentation and controls;
+3. scientific validity;
+4. reproducibility;
+5. source/artifact provenance;
+6. justified impact on hypotheses and canonical state.
+
+A clean diff is not enough if the evidence does not support the claim.
+
+## Provenance without turning Git into object storage
+
+Use:
+
+- `provenance/sources.json` for important external repositories, models, datasets, papers, tools, and immutable revisions;
+- `provenance/artifacts.json` for model weights, tensor dumps, large benchmark outputs, datasets, traces, or other artifacts stored outside Git.
+
+Keep compact evidence, configs, metrics, reports, and generation scripts in Git when practical. Keep huge blobs elsewhere and record durable location/checksum/reproduction information.
 
 ## Start a new project
 
 1. Create a repository from this template.
-2. Replace all `[PROJECT ...]` / `[SET_ME]` placeholders.
+2. Replace `[PROJECT ...]`, `[TASK-ID]`, example provenance entries, and `[SET_ME]` placeholders.
 3. Fill `PROJECT_STATE.md` and `RESEARCH_TASK.md`.
-4. Review `AUTONOMY_POLICY.md` and define resource limits.
-5. Give ChatGPT repository access and ask it to read `PROJECT_STATE.md`, `CONTEXT_LEDGER.md`, and `HARNESS_OUTBOX.md` before planning.
-6. The next executable task goes into `HARNESS_INBOX.md`.
-7. For manual Harness operation, execute that task directly.
-8. For event-driven execution, configure a self-hosted runner and `HARNESS_COMMAND_JSON`, then publish the matching unique ID in `.harness/task.json` with `status: READY`.
-9. The Harness executes, writes evidence, updates `HARNESS_OUTBOX.md`, and commits relevant work.
-10. ChatGPT reviews the results and compresses durable conclusions back into canonical state before publishing a new task.
+4. Create initial falsifiable entries in `HYPOTHESES.md`.
+5. Review `AUTONOMY_POLICY.md` and define resource/cost limits.
+6. Configure important upstream sources in `provenance/sources.json`.
+7. Give ChatGPT repository access and ask it to restore state from canonical files before planning.
+8. Put the next executable task in `HARNESS_INBOX.md`.
+9. For event-driven execution, configure a self-hosted runner and `HARNESS_COMMAND_JSON`, then publish the matching unique ID in `.harness/task.json` with `status: READY`.
+10. Prefer `delivery_mode: PULL_REQUEST` for code, instrumentation, experiments, or evidence that may change conclusions.
+11. Review/merge the evidence package, then compress durable findings back into canonical state before publishing another task.
 
-## Canonical files
+## Core files
 
-- `PROJECT_STATE.md` — current authoritative project snapshot.
+### Canonical state
+
+- `PROJECT_STATE.md` — current authoritative snapshot.
 - `CONTEXT_LEDGER.md` — goal → evidence → exclusions → decisions → unknowns → next experiment.
 - `RESEARCH_TASK.md` — staged research plan and gates.
 - `HYPOTHESES.md` — falsifiable hypotheses and status.
 - `DECISIONS.md` — important decisions and rationale.
 - `UNRESOLVED.md` — open questions.
-- `FAILURES.md` — failed or ruled-out paths so they are not repeated.
-- `HARNESS_INBOX.md` — planner → local Harness task contract.
-- `HARNESS_OUTBOX.md` — local Harness → planner structured result.
+- `FAILURES.md` — failed/invalid/ruled-out paths.
+
+### Planner ↔ Harness
+
+- `HARNESS_INBOX.md` — bounded executable contract.
+- `HARNESS_OUTBOX.md` — structured evidence/result package.
 - `AUTONOMY_POLICY.md` — continuation, repair, human-review, and resource boundaries.
 - `.harness/task.json` — machine-readable one-shot dispatch trigger.
 - `.harness/completed.json` — consumed task-ID ledger.
-- `harness/worker.py` — idempotent local dispatcher.
-- `.github/workflows/harness-dispatch.yml` — optional self-hosted event transport.
-- `docs/WORKFLOW.md` — operating protocol.
-- `docs/CONTEXT_COMPRESSION.md` — rules for converting raw work into durable context.
 
-## Safety properties of the dispatch design
+### Review / provenance
 
-- Only `.harness/task.json` changes trigger automatic local execution.
-- OUTBOX/result commits do not trigger another run.
-- A task ID is consumed after one execution attempt; retries need a new ID.
+- `docs/REVIEW_PROTOCOL.md` — scientific/code review policy.
+- `docs/PROVENANCE.md` — source and artifact traceability.
+- `docs/RESEARCH_OBJECT_MODEL.md` — links hypotheses, tasks, experiments, artifacts, PRs, and decisions.
+- `provenance/sources.json` — external source registry.
+- `provenance/artifacts.json` — large/external artifact registry.
+- `.github/pull_request_template.md` — evidence-oriented PR template.
+
+### Automation
+
+- `harness/worker.py` — one-shot claim + local dispatcher + optional PR work branch.
+- `harness/record_state.py` — safely records/pushes communication state.
+- `harness/validate_repository.py` — stdlib-only state/provenance contract validator.
+- `.github/workflows/harness-dispatch.yml` — optional self-hosted execution and PR opening.
+- `.github/workflows/research-state-check.yml` — validation on PRs and `main`.
+
+## Safety properties
+
+- Only `.harness/task.json` changes on the configured base branch trigger automatic local execution.
+- A task is claimed on the base branch before local execution; workflow re-runs cannot silently replay it.
+- OUTBOX/result/PR commits do not trigger another task.
+- Retries require a new task ID.
 - `HUMAN_REVIEW_REQUIRED` never auto-dispatches.
-- The local Harness is forbidden from publishing its own next task.
-- The workflow does not run `git add -A`; arbitrary local files are not automatically staged.
-- Resource/cost limits are project-defined and should be set before enabling automation.
+- The Harness cannot publish its own next task and protected trigger/ledger mutations are rejected/reverted.
+- `PULL_REQUEST` delivery prevents normal research/code work from being silently pushed straight into canonical `main`.
+- The workflow never runs `git add -A`; arbitrary local files are not automatically staged.
+- Large artifacts belong in external storage with provenance, not blindly in Git.
+- Resource/cost limits must be defined before high-cost autonomy is enabled.
 
 ## Prime directive
 
-> Do not preserve everything. Preserve what remains decision-relevant.
+> Do not preserve everything. Preserve what remains decision-relevant — and preserve enough provenance to prove where it came from.
