@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "artifact_id": "ART-EXAMPLE",
+      "task_id": "TASK-EXAMPLE",
+      "experiment_id": null,
+      "kind": "large_generated_artifact",
+      "description": "Replace this example with an artifact that should not be committed directly to Git.",
+      "location": "LOCAL_OR_REMOTE_LOCATION",
+      "storage_scope": "local_only",
+      "size_bytes": null,
+      "sha256": null,
+      "generated_by": "COMMAND_OR_SCRIPT",
+      "source_commit": null,
+      "config_path": null,
+      "reproducible": null,
+      "retention": "Replace/delete this example when bootstrapping a real project."
+    }
+  ]
+}

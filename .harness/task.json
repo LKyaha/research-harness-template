@@ -3,9 +3,11 @@
   "task_id": "TEMPLATE-NOOP-000",
   "status": "IDLE",
   "autonomy": "HUMAN_REVIEW_REQUIRED",
+  "delivery_mode": "PULL_REQUEST",
+  "base_branch": "main",
   "depends_on": null,
   "issued_at": null,
   "failure_budget": 0,
   "inbox_path": "HARNESS_INBOX.md",
-  "notes": "Replace with a new unique task_id and status READY only when intentionally dispatching local execution."
+  "notes": "Replace with a new unique task_id and status READY only when intentionally dispatching local execution. PULL_REQUEST is the recommended default for reviewable research/code work."
 }
